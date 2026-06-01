@@ -66,13 +66,10 @@ async function enviarVideo() {
     var CHUNK  = CHUNK_MB * 1024 * 1024;
 
     if (blob.size <= CHUNK) {
-      var b64 = await toBase64(blob);
+      var b64  = await toBase64(blob);
       setProgreso(30);
-      var res  = await fetch(APPS_SCRIPT_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ accion: 'subirVideo', base64: b64, nombre: nombre })
-      });
+      var url1 = APPS_SCRIPT_URL + '?accion=subirVideo&nombre=' + encodeURIComponent(nombre) + '&base64=' + encodeURIComponent(b64);
+      var res  = await fetch(url1);
       setProgreso(80);
       var data = await res.json();
       if (!data.ok) throw new Error(data.mensaje);
@@ -81,18 +78,14 @@ async function enviarVideo() {
       var total = Math.ceil(blob.size / CHUNK);
       for (var i = 0; i < total; i++) {
         var b64c = await toBase64(blob.slice(i * CHUNK, (i + 1) * CHUNK));
-        var res2 = await fetch(APPS_SCRIPT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({
-            accion: 'chunk',
-            base64: b64c,
-            fileId: fileId || '',
-            chunkIndex: i,
-            totalChunks: total,
-            nombre: nombre
-          })
-        });
+        var url2 = APPS_SCRIPT_URL
+          + '?accion=chunk'
+          + '&nombre='      + encodeURIComponent(nombre)
+          + '&fileId='      + encodeURIComponent(fileId || '')
+          + '&chunkIndex='  + i
+          + '&totalChunks=' + total
+          + '&base64='      + encodeURIComponent(b64c);
+        var res2  = await fetch(url2);
         var data2 = await res2.json();
         if (!data2.ok) throw new Error(data2.mensaje);
         fileId = data2.fileId;
