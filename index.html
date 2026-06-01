@@ -1,150 +1,112 @@
-var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby5Gov9DiC5tQwH2urJfJtzH9OWlijT5pa_EhLyDPK2afV3jO2jOFZLvndAL80HTE7c/exec';
-
-var mediaRecorder;
-var chunks   = [];
-var recTimer = null;
-var recStart = null;
-var CHUNK_MB = 3;
-
-document.getElementById('btn-iniciar').addEventListener('click', iniciar);
-document.getElementById('btn-detener').addEventListener('click', detener);
-
-async function iniciar() {
-  try {
-    var stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    var vid    = document.getElementById('preview');
-    vid.srcObject = stream;
-    chunks = [];
-
-    mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.ondataavailable = function(e) { if (e.data.size > 0) chunks.push(e.data); };
-    mediaRecorder.onstop = enviarVideo;
-    mediaRecorder.start();
-
-    recStart = Date.now();
-    recTimer = setInterval(function() {
-      var s  = Math.floor((Date.now() - recStart) / 1000);
-      var mm = String(Math.floor(s / 60)).padStart(2, '0');
-      var ss = String(s % 60).padStart(2, '0');
-      setStatus('Grabando... ' + mm + ':' + ss, 'grabando');
-    }, 1000);
-
-    document.getElementById('btn-iniciar').disabled = true;
-    document.getElementById('btn-detener').disabled = false;
-    setStatus('Grabando...', 'grabando');
-
-  } catch(err) {
-    mostrarError('No se pudo acceder a la camara: ' + err.message);
-  }
-}
-
-function detener() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-  clearInterval(recTimer);
-  document.getElementById('btn-detener').disabled = true;
-  var stream = document.getElementById('preview').srcObject;
-  if (stream) stream.getTracks().forEach(function(t) { t.stop(); });
-  setStatus('Procesando video...', 'subiendo');
-}
-
-async function enviarVideo() {
-  var blob    = new Blob(chunks, { type: 'video/webm' });
-  var totalMB = (blob.size / 1024 / 1024).toFixed(1);
-  var nombre  = 'entrega_' + new Date().toISOString().replace(/[:.]/g, '-') + '.webm';
-
-  var vid = document.getElementById('preview');
-  vid.srcObject = null;
-  vid.src       = URL.createObjectURL(blob);
-  vid.controls  = true;
-  vid.muted     = false;
-
-  setStatus('Subiendo video (' + totalMB + ' MB)...', 'subiendo');
-  mostrarProgreso(0);
-
-  try {
-    var fileId = null;
-    var CHUNK  = CHUNK_MB * 1024 * 1024;
-
-    if (blob.size <= CHUNK) {
-      var b64 = await toBase64(blob);
-      setProgreso(30);
-      var res  = await fetch(APPS_SCRIPT_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ accion: 'subirVideo', base64: b64, nombre: nombre })
-      });
-      setProgreso(80);
-      var data = await res.json();
-      if (!data.ok) throw new Error(data.mensaje);
-      fileId = data.fileId;
-    } else {
-      var total = Math.ceil(blob.size / CHUNK);
-      for (var i = 0; i < total; i++) {
-        var b64c = await toBase64(blob.slice(i * CHUNK, (i + 1) * CHUNK));
-        var res2 = await fetch(APPS_SCRIPT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({
-            accion: 'chunk',
-            base64: b64c,
-            fileId: fileId || '',
-            chunkIndex: i,
-            totalChunks: total,
-            nombre: nombre
-          })
-        });
-        var data2 = await res2.json();
-        if (!data2.ok) throw new Error(data2.mensaje);
-        fileId = data2.fileId;
-        setProgreso(Math.round(((i + 1) / total) * 100));
-      }
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grabadora — Entrega de Turno OTEX</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+      background: #0D1117;
+      color: #fff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      gap: 20px;
+      text-align: center;
     }
-
-    setProgreso(100);
-    ocultarProgreso();
-    setStatus('Video guardado. Cerrando ventana...', 'listo');
-    document.getElementById('success-box').style.display = 'block';
-
-    if (window.opener && !window.opener.closed) {
-      window.opener.recibirDriveFileId(fileId);
+    h2 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .sub { font-size: 13px; color: rgba(255,255,255,.5); }
+    video {
+      width: 100%;
+      max-width: 560px;
+      aspect-ratio: 16/9;
+      border-radius: 10px;
+      background: #1a1a2a;
+      border: 1.5px solid #2D3748;
     }
-    setTimeout(function() { window.close(); }, 2000);
+    .controls { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+    button {
+      padding: 10px 24px;
+      border-radius: 24px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      border: none;
+      font-family: inherit;
+      color: #fff;
+      transition: opacity .18s;
+    }
+    button:disabled { opacity: .35; cursor: not-allowed; }
+    #btn-iniciar { background: #0D9FE7; }
+    #btn-detener { background: #EF4444; }
+    #status { font-size: 13px; color: rgba(255,255,255,.5); min-height: 20px; }
+    #status.grabando { color: #FF4444; font-weight: 700; animation: pulse 1.2s infinite; }
+    #status.subiendo { color: #FF9933; font-weight: 600; }
+    #status.listo    { color: #4ADE80; font-weight: 700; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .progress-wrap  { width: 100%; max-width: 560px; display: none; }
+    .progress-label { font-size: 12px; color: rgba(255,255,255,.5); margin-bottom: 6px; }
+    .progress-track { background: #1E293B; border-radius: 6px; height: 6px; overflow: hidden; }
+    .progress-bar   { height: 100%; background: #0D9FE7; width: 0%; transition: width .3s; border-radius: 6px; }
+    .success-box {
+      background: #052e16;
+      border: 1.5px solid #166534;
+      border-radius: 10px;
+      padding: 16px 24px;
+      max-width: 560px;
+      width: 100%;
+      display: none;
+    }
+    .success-box p     { font-size: 14px; color: #4ADE80; font-weight: 600; margin-bottom: 4px; }
+    .success-box small { font-size: 12px; color: rgba(255,255,255,.4); }
+    .error-box {
+      background: #2d0a0a;
+      border: 1.5px solid #7f1d1d;
+      border-radius: 10px;
+      padding: 16px 24px;
+      max-width: 560px;
+      width: 100%;
+      display: none;
+      font-size: 13px;
+      color: #FCA5A5;
+    }
+  </style>
+</head>
+<body>
 
-  } catch(err) {
-    ocultarProgreso();
-    mostrarError('Error al subir el video: ' + err.message);
-    document.getElementById('btn-iniciar').disabled = false;
-  }
-}
+  <div>
+    <h2>Grabadora de Entrega de Turno</h2>
+    <p class="sub">El video se guardara automaticamente al terminar la grabacion</p>
+  </div>
 
-function toBase64(blob) {
-  return new Promise(function(resolve, reject) {
-    var r = new FileReader();
-    r.onload  = function() { resolve(r.result.split(',')[1]); };
-    r.onerror = reject;
-    r.readAsDataURL(blob);
-  });
-}
+  <video id="preview" autoplay muted playsinline></video>
 
-function setStatus(msg, cls) {
-  var el = document.getElementById('status');
-  el.textContent = msg;
-  el.className   = cls || '';
-}
-function mostrarProgreso(v) {
-  document.getElementById('progress-wrap').style.display = 'block';
-  setProgreso(v);
-}
-function setProgreso(v) {
-  document.getElementById('progress-bar').style.width   = v + '%';
-  document.getElementById('progress-label').textContent = 'Subiendo video... ' + v + '%';
-}
-function ocultarProgreso() {
-  document.getElementById('progress-wrap').style.display = 'none';
-}
-function mostrarError(msg) {
-  var el = document.getElementById('error-box');
-  el.textContent = msg;
-  el.style.display = 'block';
-  setStatus('Error', '');
-}
+  <div class="controls">
+    <button id="btn-iniciar">Iniciar Grabacion</button>
+    <button id="btn-detener" disabled>Detener y Guardar</button>
+  </div>
+
+  <div id="status">Presione "Iniciar Grabacion" para comenzar</div>
+
+  <div class="progress-wrap" id="progress-wrap">
+    <div class="progress-label" id="progress-label">Subiendo video...</div>
+    <div class="progress-track">
+      <div class="progress-bar" id="progress-bar"></div>
+    </div>
+  </div>
+
+  <div class="success-box" id="success-box">
+    <p>Video guardado correctamente</p>
+    <small>Esta ventana se cerrara en unos segundos...</small>
+  </div>
+
+  <div class="error-box" id="error-box"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
