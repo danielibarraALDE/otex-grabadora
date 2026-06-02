@@ -1,6 +1,5 @@
 var CLIENT_ID     = '813620033731-e8a43le1r3vvj265cm6oeu2vgqotlne6.apps.googleusercontent.com';
 var FOLDER_ID     = '1JW4GpbPTbJIOJ6YYUUu9tYlKRt1CNHSM';
-var PORTAL_SCRIPT = 'https://script.google.com/macros/s/AKfycbxs3BvZ_TcYvggDgPGX5JU01hmfkVM70Cz-ixJaOET-WQfelpSgdIrfZC9n-DKZK4UA/exec';
 
 var mediaRecorder;
 var chunks    = [];
@@ -12,7 +11,6 @@ var accessToken = null;
 document.getElementById('btn-iniciar').addEventListener('click', iniciar);
 document.getElementById('btn-detener').addEventListener('click', detener);
 
-// Cargar Google Identity Services
 window.onload = function() {
   var script = document.createElement('script');
   script.src = 'https://accounts.google.com/gsi/client';
@@ -30,7 +28,6 @@ window.onload = function() {
         document.getElementById('btn-iniciar').disabled = false;
       }
     });
-    // Solicitar token al cargar
     document.getElementById('btn-iniciar').disabled = true;
     setStatus('Solicitando autorizacion de Google...', '');
     tokenClient.requestAccessToken({ prompt: 'consent' });
@@ -91,14 +88,12 @@ async function enviarVideo() {
   mostrarProgreso(0);
 
   try {
-    // Metadata del archivo
     var metadata = {
-      name:    nombre,
+      name:     nombre,
       mimeType: 'video/webm',
-      parents: [FOLDER_ID]
+      parents:  [FOLDER_ID]
     };
 
-    // Subir usando Drive API multipart upload
     var form = new FormData();
     form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
     form.append('file', blob);
@@ -124,7 +119,6 @@ async function enviarVideo() {
     var data   = await res.json();
     var fileId = data.id;
 
-    // Hacer el archivo accesible con el link
     await fetch(
       'https://www.googleapis.com/drive/v3/files/' + fileId + '/permissions',
       {
@@ -142,9 +136,11 @@ async function enviarVideo() {
     setStatus('Video guardado. Cerrando ventana...', 'listo');
     document.getElementById('success-box').style.display = 'block';
 
-    // Enviar fileId de vuelta al portal
     if (window.opener && !window.opener.closed) {
-      window.opener.recibirDriveFileId(fileId);
+      window.opener.postMessage(
+        { tipo: 'driveFileId', fileId: fileId },
+        '*'
+      );
     }
 
     setTimeout(function() { window.close(); }, 2000);
