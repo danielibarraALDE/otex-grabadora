@@ -1,13 +1,42 @@
-var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby5Gov9DiC5tQwH2urJfJtzH9OWlijT5pa_EhLyDPK2afV3jO2jOFZLvndAL80HTE7c/exec';
+var CLIENT_ID     = '813620033731-e8a43le1r3vvj265cm6oeu2vgqotlne6.apps.googleusercontent.com';
+var FOLDER_ID     = '1JW4GpbPTbJIOJ6YYUUu9tYlKRt1CNHSM';
+var PORTAL_SCRIPT = 'https://script.google.com/macros/s/AKfycbxs3BvZ_TcYvggDgPGX5JU01hmfkVM70Cz-ixJaOET-WQfelpSgdIrfZC9n-DKZK4UA/exec';
 
 var mediaRecorder;
-var chunks   = [];
-var recTimer = null;
-var recStart = null;
-var CHUNK_MB = 3;
+var chunks    = [];
+var recTimer  = null;
+var recStart  = null;
+var tokenClient;
+var accessToken = null;
 
 document.getElementById('btn-iniciar').addEventListener('click', iniciar);
 document.getElementById('btn-detener').addEventListener('click', detener);
+
+// Cargar Google Identity Services
+window.onload = function() {
+  var script = document.createElement('script');
+  script.src = 'https://accounts.google.com/gsi/client';
+  script.onload = function() {
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      callback: function(response) {
+        if (response.error) {
+          mostrarError('Error de autorizacion: ' + response.error);
+          return;
+        }
+        accessToken = response.access_token;
+        setStatus('Autorizado. Presione "Iniciar Grabacion" para comenzar.', '');
+        document.getElementById('btn-iniciar').disabled = false;
+      }
+    });
+    // Solicitar token al cargar
+    document.getElementById('btn-iniciar').disabled = true;
+    setStatus('Solicitando autorizacion de Google...', '');
+    tokenClient.requestAccessToken({ prompt: 'consent' });
+  };
+  document.head.appendChild(script);
+};
 
 async function iniciar() {
   try {
@@ -58,65 +87,73 @@ async function enviarVideo() {
   vid.controls  = true;
   vid.muted     = false;
 
-  setStatus('Subiendo video (' + totalMB + ' MB)...', 'subiendo');
+  setStatus('Subiendo video (' + totalMB + ' MB) a Drive...', 'subiendo');
   mostrarProgreso(0);
 
   try {
-    var fileId = null;
-    var CHUNK  = CHUNK_MB * 1024 * 1024;
+    // Metadata del archivo
+    var metadata = {
+      name:    nombre,
+      mimeType: 'video/webm',
+      parents: [FOLDER_ID]
+    };
 
-    if (blob.size <= CHUNK) {
-      var b64  = await toBase64(blob);
-      setProgreso(30);
-      var url1 = APPS_SCRIPT_URL + '?accion=subirVideo&nombre=' + encodeURIComponent(nombre) + '&base64=' + encodeURIComponent(b64);
-      var res  = await fetch(url1);
-      setProgreso(80);
-      var data = await res.json();
-      if (!data.ok) throw new Error(data.mensaje);
-      fileId = data.fileId;
-    } else {
-      var total = Math.ceil(blob.size / CHUNK);
-      for (var i = 0; i < total; i++) {
-        var b64c = await toBase64(blob.slice(i * CHUNK, (i + 1) * CHUNK));
-        var url2 = APPS_SCRIPT_URL
-          + '?accion=chunk'
-          + '&nombre='      + encodeURIComponent(nombre)
-          + '&fileId='      + encodeURIComponent(fileId || '')
-          + '&chunkIndex='  + i
-          + '&totalChunks=' + total
-          + '&base64='      + encodeURIComponent(b64c);
-        var res2  = await fetch(url2);
-        var data2 = await res2.json();
-        if (!data2.ok) throw new Error(data2.mensaje);
-        fileId = data2.fileId;
-        setProgreso(Math.round(((i + 1) / total) * 100));
+    // Subir usando Drive API multipart upload
+    var form = new FormData();
+    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+    form.append('file', blob);
+
+    setProgreso(20);
+
+    var res = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+      {
+        method:  'POST',
+        headers: { 'Authorization': 'Bearer ' + accessToken },
+        body:    form
       }
+    );
+
+    setProgreso(80);
+
+    if (!res.ok) {
+      var errText = await res.text();
+      throw new Error('Drive API error: ' + errText);
     }
+
+    var data   = await res.json();
+    var fileId = data.id;
+
+    // Hacer el archivo accesible con el link
+    await fetch(
+      'https://www.googleapis.com/drive/v3/files/' + fileId + '/permissions',
+      {
+        method:  'POST',
+        headers: {
+          'Authorization': 'Bearer ' + accessToken,
+          'Content-Type':  'application/json'
+        },
+        body: JSON.stringify({ role: 'reader', type: 'anyone' })
+      }
+    );
 
     setProgreso(100);
     ocultarProgreso();
     setStatus('Video guardado. Cerrando ventana...', 'listo');
     document.getElementById('success-box').style.display = 'block';
 
+    // Enviar fileId de vuelta al portal
     if (window.opener && !window.opener.closed) {
       window.opener.recibirDriveFileId(fileId);
     }
+
     setTimeout(function() { window.close(); }, 2000);
 
   } catch(err) {
     ocultarProgreso();
-    mostrarError('Error al subir el video: ' + err.message);
+    mostrarError('Error al subir: ' + err.message);
     document.getElementById('btn-iniciar').disabled = false;
   }
-}
-
-function toBase64(blob) {
-  return new Promise(function(resolve, reject) {
-    var r = new FileReader();
-    r.onload  = function() { resolve(r.result.split(',')[1]); };
-    r.onerror = reject;
-    r.readAsDataURL(blob);
-  });
 }
 
 function setStatus(msg, cls) {
